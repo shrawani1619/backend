@@ -1889,8 +1889,8 @@ export const getDisbursementEmailPreview = async (req, res, next) => {
       });
     }
 
-    // Get SM/BM email (TO field)
-    const smBmEmail = lead.smBm?.email || '';
+    // Get SM/BM email (TO field) — prefer populated ref, fall back to denormalised field
+    const smBmEmail = lead.smBm?.email || lead.smBmEmail || '';
     if (!smBmEmail) {
       return res.status(400).json({
         success: false,
