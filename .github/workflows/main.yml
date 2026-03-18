@@ -2,25 +2,22 @@ name: Deploy Backend
 
 on:
   push:
-    paths:
-      - 'backend/**'
     branches:
       - main
 
 jobs:
-  backend:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Deploy Backend
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.PORT }}
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          password: ${{ secrets.SERVER_PASSWORD }}
           script: |
-            cd /root/backend
+            cd /var/www/backend
             git pull origin main
             npm install
             pm2 restart backend
