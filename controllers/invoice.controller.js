@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import invoiceService from '../services/invoice.service.js';
 import { getPaginationMeta } from '../utils/helpers.js';
 import Invoice from '../models/invoice.model.js';
@@ -21,7 +22,7 @@ function computeInvoiceAmounts(taxable, tdsPercentage = TDS_RATE) {
  */
 export const getInvoices = async (req, res, next) => {
   try {
-    const { page = 1, limit = 10, status, agentId, franchiseId } = req.query;
+    const { page = 1, limit = 10, status, agentId, franchiseId, leadId, disbursementId } = req.query;
     const skip = (page - 1) * limit;
 
     const query = {};
@@ -123,6 +124,12 @@ export const getInvoices = async (req, res, next) => {
     }
     if (franchiseId && req.user.role !== 'regional_manager' && req.user.role !== 'franchise' && req.user.role !== 'accounts_manager') {
       query.franchise = franchiseId;
+    }
+    if (leadId) query.lead = leadId;
+    if (disbursementId) {
+      query.disbursementId = mongoose.Types.ObjectId.isValid(disbursementId) && String(disbursementId).length === 24
+        ? new mongoose.Types.ObjectId(disbursementId)
+        : disbursementId;
     }
 
     const invoices = await Invoice.find(query)
@@ -356,6 +363,74 @@ export const rejectInvoice = async (req, res, next) => {
       success: true,
       message: 'Invoice rejected',
       data: invoice,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Generate Agent + Sub-Agent invoices for a single disbursement (body: leadId, disbursementId)
+ */
+export const generateInvoicesForDisbursement = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'super_admin' && req.user.role !== 'accounts_manager') {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. Only Admin and Accountant can generate invoices.',
+      });
+    }
+
+    const { leadId, disbursementId } = req.body || {};
+    if (!leadId || !disbursementId) {
+      return res.status(400).json({
+        success: false,
+        error: 'leadId and disbursementId are required in request body.',
+      });
+    }
+
+    if (req.user.role === 'accounts_manager') {
+      const { getAccountantAccessibleAgentIds } = await import('../utils/accountantScope.js');
+      const accessibleAgentIds = await getAccountantAccessibleAgentIds(req);
+      if (accessibleAgentIds.length === 0) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied. No assigned Regional Managers.',
+        });
+      }
+      const Lead = (await import('../models/lead.model.js')).default;
+      const lead = await Lead.findById(leadId).select('agent').lean();
+      if (!lead) {
+        return res.status(404).json({ success: false, error: 'Lead not found' });
+      }
+      if (!accessibleAgentIds.includes(lead.agent?.toString())) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied. You can only generate invoices for leads under your assigned Regional Managers.',
+        });
+      }
+    }
+
+    const result = await invoiceService.generateInvoicesForDisbursement(leadId, disbursementId);
+
+    const populateOpts = [
+      { path: 'lead', select: 'loanAccountNo loanType customerName bank' },
+      { path: 'agent', select: 'name email mobile city address kyc bankDetails agentType gst' },
+      { path: 'subAgent', select: 'name email mobile city address kyc bankDetails agentType gst' },
+      { path: 'franchise', select: 'name' },
+    ];
+
+    const agentInvoice = result.agentInvoice
+      ? await Invoice.findById(result.agentInvoice._id).populate(populateOpts)
+      : null;
+    const subAgentInvoice = result.subAgentInvoice
+      ? await Invoice.findById(result.subAgentInvoice._id).populate(populateOpts)
+      : null;
+
+    return res.status(201).json({
+      success: true,
+      message: 'Agent and Sub-Agent invoices generated for disbursement.',
+      data: { agentInvoice, subAgentInvoice },
     });
   } catch (error) {
     next(error);

@@ -21,6 +21,23 @@ const invoiceSchema = new mongoose.Schema(
       index: true,
     },
 
+    // Optional: link invoice to a specific disbursement (for partial disbursement invoicing)
+    disbursementId: {
+      type: mongoose.Schema.Types.Mixed, // can be ObjectId from subdoc _id
+      default: null,
+      index: true,
+    },
+
+    disbursementAmount: {
+      type: Number,
+      default: null,
+    },
+
+    commissionRate: {
+      type: Number,
+      default: null,
+    },
+
     agent: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -153,5 +170,6 @@ invoiceSchema.index({ subAgent: 1, status: 1 });
 invoiceSchema.index({ franchise: 1, status: 1 });
 invoiceSchema.index({ status: 1, createdAt: -1 });
 invoiceSchema.index({ isEscalated: 1, status: 1 });
+invoiceSchema.index({ lead: 1, disbursementId: 1, invoiceType: 1 });
 
 export default mongoose.model('Invoice', invoiceSchema);
