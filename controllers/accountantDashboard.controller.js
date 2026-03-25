@@ -298,10 +298,11 @@ export const addDisbursement = async (req, res, next) => {
     } = req.body;
 
     // Validate required fields
-    if (!amount || !date || !utr) {
+    // UTR/bank reference are optional (frontend tranche form may not collect them).
+    if (!amount || !date) {
       return res.status(400).json({
         success: false,
-        message: 'Amount, date, and UTR are required'
+        message: 'Amount and date are required'
       });
     }
 
@@ -367,7 +368,7 @@ export const addDisbursement = async (req, res, next) => {
     const newDisbursement = {
       amount: disbursementAmount,
       date: new Date(date),
-      utr,
+      utr: utr || '',
       bankRef: bankRef || '',
       commission: commissionAmount,
       gst: gstAmount,
