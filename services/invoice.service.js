@@ -587,7 +587,7 @@ class InvoiceService {
         throw new Error('Agent commission percentage is not set or is zero for this lead.');
       }
 
-      // Prevent duplicate: check existing invoices for this lead + disbursement
+      // Check existing invoices for this lead + disbursement
       const existingAgent = await Invoice.findOne({
         lead: leadId,
         disbursementId: disbursement._id,
@@ -598,10 +598,6 @@ class InvoiceService {
         disbursementId: disbursement._id,
         invoiceType: 'sub_agent',
       });
-
-      if (existingAgent || existingSubAgent) {
-        throw new Error('Invoices already exist for this disbursement. Duplicate generation prevented.');
-      }
 
       const tdsPercentage = TDS_RATE;
       let subAgentId = null;
@@ -634,46 +630,60 @@ class InvoiceService {
         const agentAmounts = computeInvoiceAmounts(agentCommissionAmount, tdsPercentage);
         const subAgentAmounts = computeInvoiceAmounts(subAgentCommissionAmount, tdsPercentage);
 
-        const agentInvoiceNumber = await generateInvoiceNumber();
-        const subAgentInvoiceNumber = await generateInvoiceNumber();
+        if (existingAgent && existingSubAgent) {
+          throw new Error('Invoices already exist for this disbursement. Duplicate generation prevented.');
+        }
 
-        result.agentInvoice = await Invoice.create({
-          invoiceNumber: agentInvoiceNumber,
-          lead: leadId,
-          disbursementId: disbursement._id,
-          disbursementAmount,
-          commissionRate: agentRemainingPercentage,
-          agent: lead.agent._id || lead.agent,
-          franchise: franchiseId,
-          invoiceType: 'agent',
-          commissionAmount: agentCommissionAmount,
-          gstAmount: agentAmounts.gstAmount,
-          tdsAmount: agentAmounts.tdsAmount,
-          tdsPercentage,
-          netPayable: agentAmounts.netPayable,
-          status: 'pending',
-          invoiceDate: new Date(),
-        });
+        if (existingAgent) {
+          result.agentInvoice = existingAgent;
+        } else {
+          const agentInvoiceNumber = await generateInvoiceNumber();
+          result.agentInvoice = await Invoice.create({
+            invoiceNumber: agentInvoiceNumber,
+            lead: leadId,
+            disbursementId: disbursement._id,
+            disbursementAmount,
+            commissionRate: agentRemainingPercentage,
+            agent: lead.agent._id || lead.agent,
+            franchise: franchiseId,
+            invoiceType: 'agent',
+            commissionAmount: agentCommissionAmount,
+            gstAmount: agentAmounts.gstAmount,
+            tdsAmount: agentAmounts.tdsAmount,
+            tdsPercentage,
+            netPayable: agentAmounts.netPayable,
+            status: 'pending',
+            invoiceDate: new Date(),
+          });
+        }
 
-        result.subAgentInvoice = await Invoice.create({
-          invoiceNumber: subAgentInvoiceNumber,
-          lead: leadId,
-          disbursementId: disbursement._id,
-          disbursementAmount,
-          commissionRate: subAgentCommissionPercentage,
-          agent: lead.agent._id || lead.agent,
-          subAgent: subAgentId,
-          franchise: franchiseId,
-          invoiceType: 'sub_agent',
-          commissionAmount: subAgentCommissionAmount,
-          gstAmount: subAgentAmounts.gstAmount,
-          tdsAmount: subAgentAmounts.tdsAmount,
-          tdsPercentage,
-          netPayable: subAgentAmounts.netPayable,
-          status: 'pending',
-          invoiceDate: new Date(),
-        });
+        if (existingSubAgent) {
+          result.subAgentInvoice = existingSubAgent;
+        } else {
+          const subAgentInvoiceNumber = await generateInvoiceNumber();
+          result.subAgentInvoice = await Invoice.create({
+            invoiceNumber: subAgentInvoiceNumber,
+            lead: leadId,
+            disbursementId: disbursement._id,
+            disbursementAmount,
+            commissionRate: subAgentCommissionPercentage,
+            agent: lead.agent._id || lead.agent,
+            subAgent: subAgentId,
+            franchise: franchiseId,
+            invoiceType: 'sub_agent',
+            commissionAmount: subAgentCommissionAmount,
+            gstAmount: subAgentAmounts.gstAmount,
+            tdsAmount: subAgentAmounts.tdsAmount,
+            tdsPercentage,
+            netPayable: subAgentAmounts.netPayable,
+            status: 'pending',
+            invoiceDate: new Date(),
+          });
+        }
       } else {
+        if (existingAgent) {
+          throw new Error('Agent invoice already exists for this disbursement. Duplicate generation prevented.');
+        }
         const agentCommissionAmount = (disbursementAmount * agentCommissionPercentage) / 100;
         const amounts = computeInvoiceAmounts(agentCommissionAmount, tdsPercentage);
         const invoiceNumber = await generateInvoiceNumber();
@@ -879,6 +889,7 @@ class InvoiceService {
       const invoice = await Invoice.findById(invoiceId)
         .populate({
           path: 'lead',
+          select: 'loanAccountNo loanType customerName leadId loanAmount',
           populate: {
             path: 'bank',
             select: 'name'

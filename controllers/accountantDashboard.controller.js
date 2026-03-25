@@ -949,22 +949,13 @@ export const updateLeadStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status, notes } = req.body;
 
-    // Allowed status transitions for accountants (using correct status values)
-    const allowedStatuses = [
-      'sanctioned',
-      'partial_disbursed', 
-      'disbursed',
-      'completed'
-    ];
-
-    if (!allowedStatuses.includes(status)) {
+    if (!ACCOUNTANT_ALLOWED_STATUSES.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: `Accountants can only update status to: ${allowedStatuses.join(', ')}`
+        message: `Accountants can only update status to: ${ACCOUNTANT_ALLOWED_STATUSES.join(', ')}`
       });
     }
 
-    // Find the lead
     const lead = await Lead.findById(id);
     if (!lead) {
       return res.status(404).json({
@@ -973,12 +964,20 @@ export const updateLeadStatus = async (req, res, next) => {
       });
     }
 
-    // Verify lead is accessible to accountant
-    const accessibleStatuses = ['APPROVED', 'DISBURSEMENT_IN_PROGRESS', 'SANCTIONED', 'PARTIAL_DISBURSED', 'COMPLETED'];
-    if (!accessibleStatuses.includes(lead.status)) {
+    if (req.user.role === 'accounts_manager') {
+      const accessibleAgentIds = await getAccountantAccessibleAgentIds(req);
+      if (accessibleAgentIds.length === 0 || !accessibleAgentIds.includes(lead.agent.toString())) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. You can only update leads under your assigned Regional Managers.'
+        });
+      }
+    }
+
+    if (!ACCOUNTANT_ALLOWED_STATUSES.includes(lead.status)) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot update status for this lead'
+        message: `Cannot update status for this lead. Current status: ${lead.status}. Allowed current statuses: ${ACCOUNTANT_ALLOWED_STATUSES.join(', ')}`
       });
     }
 

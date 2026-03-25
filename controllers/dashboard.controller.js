@@ -8,6 +8,52 @@ import EmailLog from '../models/emailLog.model.js';
 import mongoose from 'mongoose';
 import { getRegionalManagerFranchiseIds } from '../utils/regionalScope.js';
 
+const getAdvancePaymentStats = async ({ leadMatch = {} } = {}) => {
+  const advanceLeadIds = await Lead.find({ ...leadMatch, advancePayment: true }).distinct('_id');
+  const advancePaymentCount = Array.isArray(advanceLeadIds) ? advanceLeadIds.length : 0;
+
+  if (!advanceLeadIds || advanceLeadIds.length === 0) {
+    return { advancePaymentCount: 0, advancePaymentPendingAmount: 0 };
+  }
+
+  const agg = await Invoice.aggregate([
+    { $match: { lead: { $in: advanceLeadIds } } },
+    {
+      $lookup: {
+        from: 'payouts',
+        localField: 'payout',
+        foreignField: '_id',
+        as: 'payoutDoc',
+      },
+    },
+    {
+      $addFields: {
+        payoutStatus: { $ifNull: [{ $arrayElemAt: ['$payoutDoc.status', 0] }, null] },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: { $ifNull: ['$netPayable', 0] } },
+        received: {
+          $sum: {
+            $cond: [
+              { $in: ['$payoutStatus', ['payment_received', 'complete']] },
+              { $ifNull: ['$netPayable', 0] },
+              0,
+            ],
+          },
+        },
+      },
+    },
+  ]);
+
+  const total = agg[0]?.total || 0;
+  const received = agg[0]?.received || 0;
+  const advancePaymentPendingAmount = Math.max(0, total - received);
+  return { advancePaymentCount, advancePaymentPendingAmount };
+};
+
 /**
  * Get agent dashboard data
  */
@@ -582,6 +628,9 @@ export const getAccountsDashboard = async (req, res, next) => {
     ]);
     const totalLoanAmount = totalLoanAmountAgg[0]?.total || 0;
 
+    // 3c. Advance Payment Stats
+    const { advancePaymentCount, advancePaymentPendingAmount } = await getAdvancePaymentStats({ leadMatch: {} });
+
     // 4. Lead Funnel
     // Get funnel period filter from query params (weekly, monthly, yearly)
     const funnelPeriod = req.query.funnelPeriod || 'monthly';
@@ -647,6 +696,8 @@ export const getAccountsDashboard = async (req, res, next) => {
         totalInvoices,
         totalRevenue,
         totalLoanAmount,
+        advancePaymentCount,
+        advancePaymentPendingAmount,
         totalPendingPayoutAmount,
         loanDistribution,
         funnelData,
@@ -1045,6 +1096,10 @@ export const getAdminDashboard = async (req, res, next) => {
       ? ((previousPeriodCompleted / previousPeriodLeads) * 100).toFixed(2)
       : 0;
 
+    const { advancePaymentCount, advancePaymentPendingAmount } = await getAdvancePaymentStats({
+      leadMatch: isRegionalManager ? leadMatch : {},
+    });
+
     // Browser States (simplified - can be enhanced with actual tracking)
     // For now, using distribution based on common browser usage
     const browserData = [
@@ -1068,6 +1123,8 @@ export const getAdminDashboard = async (req, res, next) => {
         totalPayouts,
         totalRevenue: totalCommission,
         totalLoanAmount,
+        advancePaymentCount,
+        advancePaymentPendingAmount,
         leadStatusBreakdown,
         loanDistribution,
         leadConversionFunnel,

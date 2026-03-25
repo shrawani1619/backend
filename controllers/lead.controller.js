@@ -529,7 +529,7 @@ export const createLead = async (req, res, next) => {
     });
 
     const populatedLead = await Lead.findById(lead._id)
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('subAgent', 'name email mobile')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
@@ -646,7 +646,7 @@ export const getLeads = async (req, res, next) => {
     }
 
     const leads = await Lead.find(query)
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('subAgent', 'name email mobile')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
@@ -676,7 +676,10 @@ export const getLeads = async (req, res, next) => {
 export const getLeadById = async (req, res, next) => {
   try {
     const lead = await Lead.findById(req.params.id)
-      .populate('agent', 'name email mobile')
+      .populate(
+        'agent',
+        'name email mobile managedBy managedByModel bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName'
+      )
       .populate('subAgent', 'name email mobile')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
@@ -840,6 +843,12 @@ export const updateLead = async (req, res, next) => {
     // Ensure agent ID is valid ObjectId format
     const updateData = { ...req.body };
 
+    // Prevent accidental status overwrite when frontend doesn't intend to change it.
+    // If `status` is missing/empty/undefined in the request body, keep existingLead.status.
+    if (updateData.status === undefined || updateData.status === null || updateData.status === '') {
+      delete updateData.status;
+    }
+
     // Cast bank to ObjectId if it's a valid string (so populate works correctly)
     if (updateData.bank && typeof updateData.bank === 'string' && mongoose.Types.ObjectId.isValid(updateData.bank)) {
       updateData.bank = new mongoose.Types.ObjectId(updateData.bank);
@@ -856,27 +865,41 @@ export const updateLead = async (req, res, next) => {
       } catch (_) {}
     }
 
-    // Only Relationship Manager, Accountant, and Franchise can set commission percentage and amount
+    // Only authorized roles can set commission percentage and amount
     if (updateData.commissionPercentage !== undefined || updateData.commissionAmount !== undefined) {
-      if (req.user.role !== 'relationship_manager' && req.user.role !== 'accountant' && req.user.role !== 'franchise' && req.user.role !== 'accounts_manager') {
+      if (
+        req.user.role !== 'super_admin' &&
+        req.user.role !== 'regional_manager' &&
+        req.user.role !== 'relationship_manager' &&
+        req.user.role !== 'accountant' &&
+        req.user.role !== 'franchise' &&
+        req.user.role !== 'accounts_manager'
+      ) {
         // Remove commission fields if user is not authorized
         delete updateData.commissionPercentage;
         delete updateData.commissionAmount;
-        // Optionally return error instead of silently removing
-        // return res.status(403).json({
-        //   success: false,
-        //   error: 'Access denied. Only Relationship Managers, Accountants, and Franchise can set commission.',
-        // });
-      } else if (req.user.role === 'relationship_manager') {
-        // If RM is updating and lead is assigned to self, remove commission fields
-        // (Franchise can set commission even when assigned to self)
-        const finalAgentId = updateData.agent || existingLead.agent;
-        if (finalAgentId && finalAgentId.toString() === req.user._id.toString()) {
-          delete updateData.commissionPercentage;
-          delete updateData.commissionAmount;
-        }
       }
-      // Note: Franchise users can set commission even when assigned to self (no restriction)
+    }
+
+    // Business mapping:
+    // For accounts_manager (accountant), the "commissionPercentage/commissionAmount" inputs
+    // should be treated as Partner (selling agent) commission (agentCommission* columns),
+    // not Associated (commission* columns). This prevents accountants from accidentally
+    // filling the wrong side of the dashboard table.
+    if (
+      (req.user.role === 'accounts_manager' || req.user.role === 'accountant' || req.user.role === 'relationship_manager') &&
+      (updateData.commissionPercentage !== undefined || updateData.commissionAmount !== undefined) &&
+      (updateData.agentCommissionPercentage === undefined && updateData.agentCommissionAmount === undefined)
+    ) {
+      if (updateData.commissionPercentage !== undefined) {
+        updateData.agentCommissionPercentage = updateData.commissionPercentage;
+      }
+      if (updateData.commissionAmount !== undefined) {
+        updateData.agentCommissionAmount = updateData.commissionAmount;
+      }
+      // Clear associated commission to match "commission goes to partner" rule
+      updateData.commissionPercentage = 0;
+      updateData.commissionAmount = 0;
     }
 
     // Handle agent commission fields (for franchise-created leads)
@@ -932,7 +955,7 @@ export const updateLead = async (req, res, next) => {
       new: true,
       runValidators: true,
     })
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('subAgent', 'name email mobile')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
@@ -1024,7 +1047,7 @@ export const updateLeadStatus = async (req, res, next) => {
           updateData,
           { new: true, runValidators: true }
         )
-          .populate('agent', 'name email mobile')
+          .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
           .populate('associated', 'name email mobile')
           .populate('referralFranchise', 'name email mobile')
           .populate('bank', 'name type')
@@ -1149,7 +1172,7 @@ export const updateLeadStatus = async (req, res, next) => {
       updateData,
       { new: true, runValidators: true }
     )
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
       .populate('bank', 'name type')
@@ -1265,12 +1288,18 @@ export const verifyLead = async (req, res, next) => {
       remarks,
     };
 
-    // Only Relationship Manager, Accountant, and Franchise can set commission percentage
+    // Only authorized roles can set commission percentage
     if (commissionPercentage !== undefined) {
-      if (req.user.role !== 'relationship_manager' && req.user.role !== 'accountant' && req.user.role !== 'franchise') {
+      if (
+        req.user.role !== 'super_admin' &&
+        req.user.role !== 'regional_manager' &&
+        req.user.role !== 'relationship_manager' &&
+        req.user.role !== 'accountant' &&
+        req.user.role !== 'franchise'
+      ) {
         return res.status(403).json({
           success: false,
-          error: 'Access denied. Only Relationship Managers, Accountants, and Franchise can set commission percentage.',
+          error: 'Access denied. Only Super Admin, Regional Manager, Relationship Managers, Accountants, and Franchise can set commission percentage.',
         });
       }
       updateData.commissionPercentage = commissionPercentage;
@@ -1281,7 +1310,7 @@ export const verifyLead = async (req, res, next) => {
       updateData,
       { new: true, runValidators: true }
     )
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
       .populate('bank', 'name type')
@@ -1602,7 +1631,7 @@ export const getApprovedLeads = async (req, res, next) => {
     }
 
     const leads = await Lead.find(query)
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
       .populate('bank', 'name type')
@@ -1728,7 +1757,7 @@ export const forwardLeadToRM = async (req, res, next) => {
       updateData,
       { new: true, runValidators: true }
     )
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
       .populate('bank', 'name type')
@@ -1819,7 +1848,7 @@ export const addDisbursement = async (req, res, next) => {
         oldValue: lead.disbursedAmount - trancheAmount,
         newValue: lead.disbursedAmount
       }],
-      remarks: `Disbursement of ₹${trancheAmount} added. UTR: ${utr || 'N/A'}`
+      remarks: `Disbursement of ₹${trancheAmount} added`
     });
 
     res.status(200).json({
@@ -1850,7 +1879,7 @@ export const getDisbursementEmailPreview = async (req, res, next) => {
 
     // Get lead with all populated data
     const lead = await Lead.findById(leadId)
-      .populate('agent', 'name email mobile')
+      .populate('agent', 'name email mobile bankDetails.accountHolderName bankDetails.accountNumber bankDetails.ifsc bankDetails.branch bankDetails.bankName')
       .populate('associated', 'name email mobile')
       .populate('referralFranchise', 'name email mobile')
       .populate('bank', 'name contactEmail')
@@ -1863,11 +1892,11 @@ export const getDisbursementEmailPreview = async (req, res, next) => {
       });
     }
 
-    // Check if lead status is disbursed
-    if (lead.status !== 'disbursed') {
+    // Allow disbursement confirmation for partial, full and completed disbursement flows
+    if (!['partial_disbursed', 'disbursed', 'completed'].includes(lead.status)) {
       return res.status(400).json({
         success: false,
-        error: 'Lead status must be "disbursed" to send disbursement confirmation email',
+        error: 'Lead status must be partial disbursed, disbursed, or completed to send disbursement confirmation email',
       });
     }
 
@@ -2187,10 +2216,10 @@ export const sendDisbursementEmail = async (req, res, next) => {
       });
     }
 
-    if (lead.status !== 'disbursed') {
+    if (!['partial_disbursed', 'disbursed', 'completed'].includes(lead.status)) {
       return res.status(400).json({
         success: false,
-        error: 'Lead status must be "disbursed" to send disbursement confirmation email',
+        error: 'Lead status must be partial disbursed, disbursed, or completed to send disbursement confirmation email',
       });
     }
 

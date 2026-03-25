@@ -133,10 +133,10 @@ export const getInvoices = async (req, res, next) => {
     }
 
     const invoices = await Invoice.find(query)
-      .populate('agent', 'name email mobile city address kyc bankDetails')
-      .populate('subAgent', 'name email mobile city address kyc bankDetails')
-      .populate('franchise', 'name email mobile address kyc bankDetails')
-      .populate('lead', 'loanAccountNo loanType customerName leadId')
+      .populate('agent', 'name email mobile city address kyc bankDetails agentType gst')
+      .populate('subAgent', 'name email mobile city address kyc bankDetails agentType gst')
+      .populate('franchise', 'name email mobile address kyc bankDetails franchiseType gst')
+      .populate('lead', 'loanAccountNo loanType customerName leadId loanAmount')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -485,12 +485,12 @@ export const generateInvoiceFromLead = async (req, res, next) => {
     // Handle split invoices (when subAgent exists)
     if (invoiceResult.isSplit && invoiceResult.agentInvoice && invoiceResult.subAgentInvoice) {
       const populatedAgentInvoice = await Invoice.findById(invoiceResult.agentInvoice._id)
-        .populate('lead', 'loanAccountNo loanType customerName')
+        .populate('lead', 'loanAccountNo loanType customerName loanAmount')
         .populate('agent', 'name email')
         .populate('franchise', 'name');
 
       const populatedSubAgentInvoice = await Invoice.findById(invoiceResult.subAgentInvoice._id)
-        .populate('lead', 'loanAccountNo loanType customerName')
+        .populate('lead', 'loanAccountNo loanType customerName loanAmount')
         .populate('agent', 'name email')
         .populate('subAgent', 'name email')
         .populate('franchise', 'name');
@@ -509,12 +509,12 @@ export const generateInvoiceFromLead = async (req, res, next) => {
     // Handle dual franchise invoices (when referral franchise exists)
     if (invoiceResult.mainInvoice && invoiceResult.referralInvoice) {
       const populatedMainInvoice = await Invoice.findById(invoiceResult.mainInvoice._id)
-        .populate('lead', 'loanAccountNo loanType customerName')
+        .populate('lead', 'loanAccountNo loanType customerName loanAmount')
         .populate('agent', 'name email')
         .populate('franchise', 'name');
 
       const populatedReferralInvoice = await Invoice.findById(invoiceResult.referralInvoice._id)
-        .populate('lead', 'loanAccountNo loanType customerName')
+        .populate('lead', 'loanAccountNo loanType customerName loanAmount')
         .populate('agent', 'name email')
         .populate('franchise', 'name');
 
@@ -531,7 +531,7 @@ export const generateInvoiceFromLead = async (req, res, next) => {
 
     // Handle single invoice (no subAgent, no referral franchise)
     const populatedInvoice = await Invoice.findById(invoiceResult._id)
-      .populate('lead', 'loanAccountNo loanType customerName')
+      .populate('lead', 'loanAccountNo loanType customerName loanAmount')
       .populate('agent', 'name email')
       .populate('franchise', 'name');
 
@@ -578,7 +578,7 @@ export const createInvoice = async (req, res, next) => {
     const invoice = await Invoice.create(body);
 
     const populatedInvoice = await Invoice.findById(invoice._id)
-      .populate('lead', 'loanAccountNo loanType')
+      .populate('lead', 'loanAccountNo loanType loanAmount')
       .populate('agent', 'name email')
       .populate('franchise', 'name');
 
@@ -645,7 +645,7 @@ export const updateInvoice = async (req, res, next) => {
       new: true,
       runValidators: true,
     })
-      .populate('lead', 'loanAccountNo loanType')
+      .populate('lead', 'loanAccountNo loanType loanAmount')
       .populate('agent', 'name email')
       .populate('subAgent', 'name email')
       .populate('franchise', 'name');

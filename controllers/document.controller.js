@@ -10,10 +10,13 @@ import path from 'path';
 import fs from 'fs';
 import https from 'https';
 import AdmZip from 'adm-zip';
+import { accountantCanAccessLead } from '../utils/accountantScope.js';
+
 /**
  * Authorization helper - determines if a user can view documents for an entity
+ * @param {object|null} req - Express request (required for accounts_manager lead scope)
  */
-const canViewEntity = async (user, entityType, entityId) => {
+const canViewEntity = async (user, entityType, entityId, req = null) => {
   if (!user) return false;
   if (user.role === 'super_admin') return true;
 
@@ -118,6 +121,14 @@ const canViewEntity = async (user, entityType, entityId) => {
     }
   }
 
+  // Accounts manager (accountant): same lead scope as accountant dashboard — agents under assigned RMs
+  if (user.role === 'accounts_manager' && entityType === 'lead') {
+    if (!req) return false;
+    const lead = await Lead.findById(entityId).select('agent');
+    if (!lead) return false;
+    return accountantCanAccessLead(req, lead);
+  }
+
   return false;
 };
 
@@ -200,7 +211,7 @@ export const getDocuments = async (req, res, next) => {
     const { page = 1, limit = 10, verificationStatus } = req.query;
     const skip = (page - 1) * limit;
 
-    const allowed = await canViewEntity(req.user, entityType, entityId);
+    const allowed = await canViewEntity(req.user, entityType, entityId, req);
     if (!allowed) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -244,7 +255,7 @@ export const getDocumentById = async (req, res, next) => {
       });
     }
     // Authorization: ensure user can view this document based on its entity
-    const allowed = await canViewEntity(req.user, document.entityType, document.entityId);
+    const allowed = await canViewEntity(req.user, document.entityType, document.entityId, req);
     if (!allowed) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -321,6 +332,11 @@ export const downloadDocument = async (req, res, next) => {
         success: false,
         message: 'Document not found',
       });
+    }
+
+    const allowed = await canViewEntity(req.user, document.entityType, document.entityId, req);
+    if (!allowed) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
     // Resolve the actual cloud URL — some older records have provider='local'

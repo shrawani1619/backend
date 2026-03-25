@@ -36,6 +36,13 @@ const leadSchema = new mongoose.Schema(
       index: true,
     },
 
+    // Advance payment flag (true/false)
+    advancePayment: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
     // References
     agent: {
       type: mongoose.Schema.Types.ObjectId,
