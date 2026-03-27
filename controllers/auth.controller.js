@@ -7,8 +7,17 @@ import { JWT_SECRET, JWT_EXPIRE } from '../config/env.js';
  */
 const generateToken = (userId, role) => {
   return jwt.sign({ userId, role }, JWT_SECRET, {
-    expiresIn: JWT_EXPIRE || '7d',
+    expiresIn: JWT_EXPIRE || '1h',
   });
+};
+
+const isTokenStillValid = (token) => {
+  try {
+    jwt.verify(token, JWT_SECRET);
+    return true;
+  } catch (_) {
+    return false;
+  }
 };
 
 /**
@@ -65,7 +74,7 @@ export const login = async (req, res, next) => {
     console.log('🔍 Login attempt for email:', normalizedEmail);
 
     // Find user and include password field
-    let user = await User.findOne({ email: normalizedEmail }).select('+password');
+    let user = await User.findOne({ email: normalizedEmail }).select('+password +sessionToken');
 
     // If not found in User collection, check old Agent collection (for backward compatibility)
     if (!user) {
@@ -154,12 +163,28 @@ export const login = async (req, res, next) => {
       });
     }
 
-    // Update last login
-    user.lastLoginAt = new Date();
-    await user.save();
+    // Enforce single active session per user.
+    // If old token is already expired, clear stale session and continue.
+    if (user.isLoggedIn && user.sessionToken) {
+      if (isTokenStillValid(user.sessionToken)) {
+        return res.status(409).json({
+          success: false,
+          message: 'User already logged in on another device',
+        });
+      }
+      user.isLoggedIn = false;
+      user.sessionToken = null;
+    }
 
     // Generate token
     const token = generateToken(user._id, user.role);
+
+    // Mark active session and update activity timestamps
+    user.isLoggedIn = true;
+    user.sessionToken = token;
+    user.lastLoginAt = new Date();
+    user.lastActive = new Date();
+    await user.save();
 
     // Set cookie
     const cookieOptions = {
@@ -193,6 +218,14 @@ export const login = async (req, res, next) => {
  */
 export const logout = async (req, res, next) => {
   try {
+    // Clear DB-backed active session
+    await User.findByIdAndUpdate(req.user._id, {
+      $set: {
+        isLoggedIn: false,
+        sessionToken: null,
+      },
+    });
+
     res.cookie('token', '', {
       expires: new Date(0),
       httpOnly: true,
@@ -402,7 +435,7 @@ export const changePassword = async (req, res, next) => {
     }
 
     // Get user with password
-    const user = await User.findById(req.user._id).select('+password');
+    const user = await User.findById(req.user._id).select('+password +sessionToken');
 
     if (!user) {
       return res.status(404).json({
@@ -423,11 +456,14 @@ export const changePassword = async (req, res, next) => {
 
     // Update password
     user.password = newPassword;
+    // Security: invalidate all sessions when password is changed.
+    user.isLoggedIn = false;
+    user.sessionToken = null;
     await user.save();
 
     res.status(200).json({
       success: true,
-      message: 'Password changed successfully',
+      message: 'Password changed successfully. Please login again.',
     });
   } catch (error) {
     next(error);

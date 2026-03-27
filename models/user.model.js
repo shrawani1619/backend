@@ -48,6 +48,18 @@ const userSchema = new mongoose.Schema(
       select: false,
     },
 
+    // Single active session controls
+    isLoggedIn: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    sessionToken: {
+      type: String,
+      default: null,
+      select: false,
+    },
+
     role: {
       type: String,
       enum: [
@@ -150,6 +162,7 @@ const userSchema = new mongoose.Schema(
     },
 
     lastLoginAt: Date,
+    lastActive: Date,
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -163,6 +176,20 @@ userSchema.index({ role: 1, status: 1 });
 userSchema.index({ franchise: 1, role: 1 });
 userSchema.index({ managedBy: 1, role: 1 });
 userSchema.index({ parentAgent: 1, role: 1 });
+userSchema.index({ isLoggedIn: 1, lastActive: 1 });
+
+// Hash password before save when modified
+userSchema.pre('save', async function (next) {
+  try {
+    if (!this.isModified('password') || !this.password) return next();
+    const isAlreadyHashed = this.password.startsWith('$2a$') || this.password.startsWith('$2b$') || this.password.startsWith('$2y$');
+    if (isAlreadyHashed) return next();
+    this.password = await bcrypt.hash(this.password, 12);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Compare password method (supports both plain text and bcrypt hashed passwords)
 userSchema.methods.comparePassword = async function (enteredPassword) {
