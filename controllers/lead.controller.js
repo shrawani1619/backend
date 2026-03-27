@@ -243,6 +243,13 @@ export const createLead = async (req, res, next) => {
       leadType: req.body.leadType || 'bank',
     };
 
+    // RM-associated leads should not carry associated commission values.
+    // Franchise commission is derived during invoice flow.
+    if (leadData.associatedModel === 'RelationshipManager') {
+      leadData.commissionPercentage = 0;
+      leadData.commissionAmount = 0;
+    }
+
     // Normalize bank field - use bankId if bank is not provided
     if (!leadData.bank && leadData.bankId) {
       leadData.bank = leadData.bankId;
@@ -863,6 +870,14 @@ export const updateLead = async (req, res, next) => {
         const bankDoc = await Bank.findById(updateData.bank).select('name');
         if (bankDoc) updateData.bankName = bankDoc.name;
       } catch (_) {}
+    }
+
+    // RM-associated leads should not carry associated commission values.
+    // If association is (or becomes) RelationshipManager, force associated commission to zero.
+    const effectiveAssociatedModel = updateData.associatedModel || existingLead.associatedModel;
+    if (effectiveAssociatedModel === 'RelationshipManager') {
+      updateData.commissionPercentage = 0;
+      updateData.commissionAmount = 0;
     }
 
     // Only authorized roles can set commission percentage and amount

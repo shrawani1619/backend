@@ -138,8 +138,8 @@ export const getApprovedLeads = async (req, res, next) => {
       .sort(sort)
       .limit(limit * 1)
       .skip((page - 1) * limit)
-      .populate('agent', 'name email')
-      .populate('subAgent', 'name email')
+      .populate('agent', 'name email agentType gst kyc.gst')
+      .populate('subAgent', 'name email agentType gst kyc.gst')
       .populate('referralFranchise', 'name')
       .populate('bank', 'name')
       .populate({

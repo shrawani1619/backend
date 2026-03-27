@@ -15,6 +15,22 @@ export const createAgent = async (req, res, next) => {
     if (req.user.role === 'franchise' && req.user.franchiseOwned) {
       agentData.managedBy = agentData.managedBy || req.user.franchiseOwned;
       agentData.managedByModel = agentData.managedByModel || 'Franchise';
+    } else if (req.user.role === 'relationship_manager') {
+      // Relationship Manager can create partner only under self (not under franchise).
+      const RM = await import('../models/relationship.model.js').then(m => m.default).catch(() => null);
+      let rmId = req.user.relationshipManagerOwned;
+      if (!rmId && RM) {
+        const rmDoc = await RM.findOne({ owner: req.user._id }).select('_id');
+        if (rmDoc) rmId = rmDoc._id;
+      }
+      if (!rmId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Relationship Manager profile not found. Please contact admin.',
+        });
+      }
+      agentData.managedByModel = 'RelationshipManager';
+      agentData.managedBy = rmId;
     } else if (req.user.role === 'regional_manager') {
       const franchiseIds = await getRegionalManagerFranchiseIds(req);
       if (!franchiseIds?.length) {
@@ -202,7 +218,8 @@ export const getAgentById = async (req, res, next) => {
           message: 'Franchise owner does not have an associated franchise',
         });
       }
-      if (agent.managedBy?.toString() !== req.user.franchiseOwned.toString()) {
+      const managedById = agent.managedBy?._id || agent.managedBy;
+      if (!managedById || managedById.toString() !== req.user.franchiseOwned.toString()) {
         return res.status(403).json({
           success: false,
           error: 'Access denied. You can only view partners from your franchise.',
@@ -217,7 +234,8 @@ export const getAgentById = async (req, res, next) => {
         const rmDoc = await RM.findOne({ owner: req.user._id }).select('_id');
         if (rmDoc) rmId = rmDoc._id;
       }
-      if (!rmId || agent.managedBy?.toString() !== rmId.toString()) {
+      const managedById = agent.managedBy?._id || agent.managedBy;
+      if (!rmId || !managedById || managedById.toString() !== rmId.toString()) {
         return res.status(403).json({
           success: false,
           error: 'Access denied. You can only view partners associated with you.',

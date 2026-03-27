@@ -21,6 +21,34 @@ function computeInvoiceAmounts(taxable, tdsPercentage = TDS_RATE) {
  * Handles invoice generation, approval workflow, and TDS calculation
  */
 class InvoiceService {
+  async _resolveDefaultFranchiseId() {
+    // Legacy safety net: use configured default franchise when ownership mapping is missing.
+    const byName = await Franchise.findOne({
+      name: { $regex: /^default franchise$/i },
+      status: 'active',
+    }).select('_id').lean();
+    if (byName?._id) return byName._id;
+
+    const anyActive = await Franchise.findOne({ status: 'active' }).sort({ createdAt: 1 }).select('_id').lean();
+    if (anyActive?._id) return anyActive._id;
+
+    // Last fallback: any franchise record (even if status not set/active), to avoid blocking disbursed agent invoices.
+    const anyFranchise = await Franchise.findOne({}).sort({ createdAt: 1 }).select('_id').lean();
+    return anyFranchise?._id || null;
+  }
+
+  async _resolveRelationshipManagerDoc(rmRef) {
+    if (!rmRef) return null;
+    const RelationshipManager = (await import('../models/relationship.model.js')).default;
+    const rmId = rmRef?._id || rmRef;
+    let rm = await RelationshipManager.findById(rmId).select('regionalManager owner').lean();
+    if (!rm) {
+      // Backward-compatibility: some records may store RM owner user id instead of RM profile id
+      rm = await RelationshipManager.findOne({ owner: rmId }).select('regionalManager owner').lean();
+    }
+    return rm;
+  }
+
   /**
    * Generate invoice for a lead based on status
    * - If status = "disbursed": Generate Agent Invoice
@@ -37,7 +65,16 @@ class InvoiceService {
             path: 'managedBy',
             // managedBy can be either Franchise or RelationshipManager
             // We'll handle both cases in the logic below
-          }
+          },
+        })
+        .populate({
+          path: 'agent',
+          populate: {
+            path: 'parentAgent',
+            populate: {
+              path: 'managedBy',
+            },
+          },
         })
         .populate('subAgent', 'name email')
         .populate('associated')
@@ -53,43 +90,16 @@ class InvoiceService {
         throw new Error(`Invoice can only be generated for leads with status "disbursed" or "completed". Current status: ${lead.status}`);
       }
 
-      // Get franchise from associated field (polymorphic)
-      let franchiseId = null;
-      let franchise = null;
-      
-      if (lead.associatedModel === 'Franchise' && lead.associated) {
-        // Lead is directly associated with a Franchise
-        franchiseId = lead.associated._id || lead.associated;
-        franchise = await Franchise.findById(franchiseId);
-      } else if (lead.agent && lead.agent.managedByModel === 'Franchise' && lead.agent.managedBy) {
-        // Agent is directly managed by a Franchise
-        franchiseId = lead.agent.managedBy._id || lead.agent.managedBy;
-        franchise = await Franchise.findById(franchiseId);
-      } else if (lead.agent && lead.agent.managedByModel === 'RelationshipManager' && lead.agent.managedBy) {
-        // Agent is managed by a RelationshipManager - find franchise through regional manager
-        const RelationshipManager = (await import('../models/relationship.model.js')).default;
-        const rm = await RelationshipManager.findById(lead.agent.managedBy).select('regionalManager').lean();
-        
-        if (rm && rm.regionalManager) {
-          // Find franchises under this regional manager
-          const franchises = await Franchise.find({ regionalManager: rm.regionalManager }).limit(1);
-          if (franchises.length > 0) {
-            franchise = franchises[0];
-            franchiseId = franchise._id;
-          }
-        }
-      } else if (lead.associatedModel === 'RelationshipManager' && lead.associated) {
-        // Lead is associated with a RelationshipManager - find franchise through regional manager
-        const RelationshipManager = (await import('../models/relationship.model.js')).default;
-        const rm = await RelationshipManager.findById(lead.associated._id || lead.associated).select('regionalManager').lean();
-        
-        if (rm && rm.regionalManager) {
-          // Find franchises under this regional manager
-          const franchises = await Franchise.find({ regionalManager: rm.regionalManager }).limit(1);
-          if (franchises.length > 0) {
-            franchise = franchises[0];
-            franchiseId = franchise._id;
-          }
+      let franchiseId = await this._resolveFranchiseFromLead(lead);
+      let franchise = franchiseId ? await Franchise.findById(franchiseId) : null;
+
+      // For disbursed (agent invoice) flow, do not hard-fail legacy data with missing mapping.
+      // Attach a default active franchise so invoice generation can proceed.
+      if (!franchise && lead.status === 'disbursed') {
+        const defaultFranchiseId = await this._resolveDefaultFranchiseId();
+        if (defaultFranchiseId) {
+          franchiseId = defaultFranchiseId;
+          franchise = await Franchise.findById(defaultFranchiseId);
         }
       }
 
@@ -510,24 +520,87 @@ class InvoiceService {
    */
   async _resolveFranchiseFromLead(lead) {
     let franchiseId = null;
+
+    const rawLead = await Lead.findById(lead._id || lead.id)
+      .select('associated associatedModel associatedName')
+      .lean();
+
+    // Ensure we can resolve agent ownership even when lead.agent is not populated
+    const agentId = lead.agent?._id || lead.agent || rawLead?.agent;
+    let agentDoc = null;
+    if (agentId) {
+      agentDoc = await User.findById(agentId)
+        .select('managedBy managedByModel franchise parentAgent')
+        .populate({
+          path: 'parentAgent',
+          select: 'managedBy managedByModel franchise',
+        })
+        .lean();
+    }
+
     if (lead.associatedModel === 'Franchise' && lead.associated) {
       franchiseId = lead.associated._id || lead.associated;
     } else if (lead.agent?.managedByModel === 'Franchise' && lead.agent?.managedBy) {
       franchiseId = lead.agent.managedBy._id || lead.agent.managedBy;
+    } else if (agentDoc?.managedByModel === 'Franchise' && agentDoc?.managedBy) {
+      franchiseId = agentDoc.managedBy._id || agentDoc.managedBy;
+    } else if (lead.agent?.parentAgent?.managedByModel === 'Franchise' && lead.agent?.parentAgent?.managedBy) {
+      // Sub-agent fallback: resolve via parent agent's franchise owner
+      franchiseId = lead.agent.parentAgent.managedBy._id || lead.agent.parentAgent.managedBy;
+    } else if (agentDoc?.parentAgent?.managedByModel === 'Franchise' && agentDoc?.parentAgent?.managedBy) {
+      // Sub-agent fallback when agent wasn't populated on lead
+      franchiseId = agentDoc.parentAgent.managedBy._id || agentDoc.parentAgent.managedBy;
     } else if (lead.agent?.managedByModel === 'RelationshipManager' && lead.agent?.managedBy) {
-      const RelationshipManager = (await import('../models/relationship.model.js')).default;
-      const rm = await RelationshipManager.findById(lead.agent.managedBy).select('regionalManager').lean();
+      const rm = await this._resolveRelationshipManagerDoc(lead.agent.managedBy);
+      if (rm?.regionalManager) {
+        const franchises = await Franchise.find({ regionalManager: rm.regionalManager }).limit(1);
+        if (franchises.length > 0) franchiseId = franchises[0]._id;
+      }
+    } else if (agentDoc?.managedByModel === 'RelationshipManager' && agentDoc?.managedBy) {
+      const rm = await this._resolveRelationshipManagerDoc(agentDoc.managedBy);
+      if (rm?.regionalManager) {
+        const franchises = await Franchise.find({ regionalManager: rm.regionalManager }).limit(1);
+        if (franchises.length > 0) franchiseId = franchises[0]._id;
+      }
+    } else if (lead.agent?.parentAgent?.managedByModel === 'RelationshipManager' && lead.agent?.parentAgent?.managedBy) {
+      // Sub-agent fallback: parent agent is managed by RM
+      const rm = await this._resolveRelationshipManagerDoc(lead.agent.parentAgent.managedBy);
+      if (rm?.regionalManager) {
+        const franchises = await Franchise.find({ regionalManager: rm.regionalManager }).limit(1);
+        if (franchises.length > 0) franchiseId = franchises[0]._id;
+      }
+    } else if (agentDoc?.parentAgent?.managedByModel === 'RelationshipManager' && agentDoc?.parentAgent?.managedBy) {
+      const rm = await this._resolveRelationshipManagerDoc(agentDoc.parentAgent.managedBy);
       if (rm?.regionalManager) {
         const franchises = await Franchise.find({ regionalManager: rm.regionalManager }).limit(1);
         if (franchises.length > 0) franchiseId = franchises[0]._id;
       }
     } else if (lead.associatedModel === 'RelationshipManager' && lead.associated) {
-      const RelationshipManager = (await import('../models/relationship.model.js')).default;
-      const rm = await RelationshipManager.findById(lead.associated._id || lead.associated).select('regionalManager').lean();
+      const rm = await this._resolveRelationshipManagerDoc(lead.associated);
       if (rm?.regionalManager) {
         const franchises = await Franchise.find({ regionalManager: rm.regionalManager }).limit(1);
         if (franchises.length > 0) franchiseId = franchises[0]._id;
       }
+    } else if (lead.agent?.franchise) {
+      // Backward-compatibility: legacy direct franchise field on agent user
+      franchiseId = lead.agent.franchise._id || lead.agent.franchise;
+    } else if (agentDoc?.franchise) {
+      // Backward-compatibility: legacy direct franchise field on agent user
+      franchiseId = agentDoc.franchise._id || agentDoc.franchise;
+    } else if (lead.associated && !lead.associatedModel) {
+      // Backward-compatibility: older leads may have associated set without associatedModel
+      const guessedFranchiseId = lead.associated._id || lead.associated;
+      const franchise = await Franchise.findById(guessedFranchiseId).select('_id').lean();
+      if (franchise?._id) franchiseId = franchise._id;
+    } else if (lead.associated && lead.associatedModel === 'RelationshipManager') {
+      // Data-quality fallback: associated id may accidentally contain a franchise id
+      const guessedFranchiseId = lead.associated._id || lead.associated;
+      const franchise = await Franchise.findById(guessedFranchiseId).select('_id').lean();
+      if (franchise?._id) franchiseId = franchise._id;
+    } else if (rawLead?.associatedName) {
+      // Legacy fallback: some leads only carry associatedName, no associated ObjectId
+      const byName = await Franchise.findOne({ name: rawLead.associatedName }).select('_id').lean();
+      if (byName?._id) franchiseId = byName._id;
     }
     return franchiseId;
   }
@@ -563,7 +636,10 @@ class InvoiceService {
       const disbursementAmount = Number(disbursement.amount) || 0;
       if (disbursementAmount <= 0) throw new Error('Disbursement amount must be greater than zero');
 
-      const franchiseId = await this._resolveFranchiseFromLead(lead);
+      let franchiseId = await this._resolveFranchiseFromLead(lead);
+      if (!franchiseId) {
+        franchiseId = await this._resolveDefaultFranchiseId();
+      }
       if (!franchiseId) {
         throw new Error('Franchise information not found for this lead.');
       }
