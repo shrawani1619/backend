@@ -20,6 +20,14 @@ const isTokenStillValid = (token) => {
   }
 };
 
+const forwardOrRespondError = (next, res, error) => {
+  if (typeof next === 'function') return next(error);
+  return res.status(500).json({
+    success: false,
+    message: error?.message || 'Internal server error',
+  });
+};
+
 /**
  * Get cookie expiration time in milliseconds
  */
@@ -209,7 +217,7 @@ export const login = async (req, res, next) => {
     });
   } catch (error) {
     console.error('❌ Login error:', error);
-    next(error);
+    return forwardOrRespondError(next, res, error);
   }
 };
 
@@ -238,7 +246,7 @@ export const logout = async (req, res, next) => {
       message: 'Logged out successfully',
     });
   } catch (error) {
-    next(error);
+    return forwardOrRespondError(next, res, error);
   }
 };
 
@@ -264,7 +272,7 @@ export const getMe = async (req, res, next) => {
       data: user,
     });
   } catch (error) {
-    next(error);
+    return forwardOrRespondError(next, res, error);
   }
 };
 
@@ -373,7 +381,7 @@ export const signup = async (req, res, next) => {
       token,
     });
   } catch (error) {
-    next(error);
+    return forwardOrRespondError(next, res, error);
   }
 };
 
@@ -416,7 +424,7 @@ export const updateProfile = async (req, res, next) => {
       data: user,
     });
   } catch (error) {
-    next(error);
+    return forwardOrRespondError(next, res, error);
   }
 };
 
@@ -466,6 +474,6 @@ export const changePassword = async (req, res, next) => {
       message: 'Password changed successfully. Please login again.',
     });
   } catch (error) {
-    next(error);
+    return forwardOrRespondError(next, res, error);
   }
 };
