@@ -5,7 +5,6 @@ import Invoice from '../models/invoice.model.js';
 import { getRegionalManagerFranchiseIds, regionalManagerCanAccessFranchise } from '../utils/regionalScope.js';
 import { createNotification } from '../services/ticket.service.js';
 import User from '../models/user.model.js';
-import Franchise from '../models/franchise.model.js';
 
 // Gross = Taxable + GST - TDS (GST 18%, TDS 2% of Taxable)
 const GST_RATE = 18;
@@ -90,29 +89,17 @@ export const getInvoices = async (req, res, next) => {
       }
       query.$or = [{ agent: { $in: ids } }, { subAgent: { $in: ids } }];
     } else if (req.user.role === 'accounts_manager') {
-      // Accountants see only invoices for franchises under their assigned regional managers
-      const { getAccountantAssignedRegionalManagerIds } = await import('../utils/accountantScope.js');
-      const assignedRMIds = await getAccountantAssignedRegionalManagerIds(req);
-      if (!assignedRMIds || assignedRMIds.length === 0) {
+      // Only invoices under Regional Managers assigned to this accountant (see Accountant.assignedRegionalManagers).
+      const { buildAccountsManagerInvoiceMatch } = await import('../utils/accountantScope.js');
+      const { empty, match } = await buildAccountsManagerInvoiceMatch(req);
+      if (empty) {
         return res.status(200).json({
           success: true,
           data: [],
           pagination: getPaginationMeta(page, limit, 0),
         });
       }
-      const franchiseIds = await Franchise.find({
-        regionalManager: { $in: assignedRMIds },
-      })
-        .distinct('_id')
-        .lean();
-      if (!franchiseIds || franchiseIds.length === 0) {
-        return res.status(200).json({
-          success: true,
-          data: [],
-          pagination: getPaginationMeta(page, limit, 0),
-        });
-      }
-      query.franchise = { $in: franchiseIds };
+      Object.assign(query, match);
     }
     // super_admin: no extra query restriction (sees all)
 
@@ -199,6 +186,22 @@ export const getInvoiceById = async (req, res, next) => {
         return res.status(403).json({
           success: false,
           message: 'Access denied. You can only view invoices for your franchise.',
+        });
+      }
+    } else if (req.user.role === 'accounts_manager') {
+      const { buildAccountsManagerInvoiceMatch } = await import('../utils/accountantScope.js');
+      const { empty, match } = await buildAccountsManagerInvoiceMatch(req);
+      if (empty) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied.',
+        });
+      }
+      const allowed = await Invoice.exists({ _id: invoice._id, ...match });
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Invoice is outside your assigned Regional Manager scope.',
         });
       }
     }

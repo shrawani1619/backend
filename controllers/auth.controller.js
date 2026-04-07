@@ -1,12 +1,13 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/user.model.js';
 import { JWT_SECRET, JWT_EXPIRE } from '../config/env.js';
+import { generateSessionId } from '../utils/session.js';
 
 /**
  * Generate JWT Token
  */
-const generateToken = (userId, role) => {
-  return jwt.sign({ userId, role }, JWT_SECRET, {
+const generateToken = (userId, role, sessionId) => {
+  return jwt.sign({ userId, role, sessionId }, JWT_SECRET, {
     expiresIn: JWT_EXPIRE || '1h',
   });
 };
@@ -82,7 +83,7 @@ export const login = async (req, res, next) => {
     console.log('🔍 Login attempt for email:', normalizedEmail);
 
     // Find user and include password field
-    let user = await User.findOne({ email: normalizedEmail }).select('+password +sessionToken');
+    let user = await User.findOne({ email: normalizedEmail }).select('+password +sessionToken +sessionId');
 
     // If not found in User collection, check old Agent collection (for backward compatibility)
     if (!user) {
@@ -171,27 +172,30 @@ export const login = async (req, res, next) => {
       });
     }
 
-    // Enforce single active session per user.
-    // If old token is already expired, clear stale session and continue.
-    if (user.isLoggedIn && user.sessionToken) {
-      if (isTokenStillValid(user.sessionToken)) {
-        return res.status(409).json({
-          success: false,
-          message: 'User already logged in on another device',
-        });
-      }
+    // Enforce single active session per user:
+    // - When logging in from a new device/browser, invalidate any previous session immediately.
+    if (user.isLoggedIn) {
       user.isLoggedIn = false;
       user.sessionToken = null;
+      user.sessionId = null;
+      user.lastActivity = null;
+      user.lastActive = null;
     }
 
-    // Generate token
-    const token = generateToken(user._id, user.role);
+    // Generate a unique sessionId for this login
+    const sessionId = generateSessionId();
+
+    // Generate JWT token (includes sessionId payload)
+    const token = generateToken(user._id, user.role, sessionId);
 
     // Mark active session and update activity timestamps
     user.isLoggedIn = true;
+    user.sessionId = sessionId;
+    // Keep legacy field for backward compatibility with any older middleware/token usage
     user.sessionToken = token;
     user.lastLoginAt = new Date();
-    user.lastActive = new Date();
+    user.lastActivity = new Date();
+    user.lastActive = user.lastActivity;
     await user.save();
 
     // Set cookie
@@ -230,7 +234,10 @@ export const logout = async (req, res, next) => {
     await User.findByIdAndUpdate(req.user._id, {
       $set: {
         isLoggedIn: false,
+        sessionId: null,
         sessionToken: null,
+        lastActivity: null,
+        lastActive: null,
       },
     });
 
@@ -358,8 +365,14 @@ export const signup = async (req, res, next) => {
 
     const user = await User.create(userData);
 
-    // Generate token for auto-login
-    const token = generateToken(user._id, user.role);
+    // Generate token for auto-login.
+    // Note: user status is typically "inactive" after signup, but we still include
+    // sessionId in the JWT payload so the auth middleware can validate payload shape.
+    const sessionId = generateSessionId();
+    user.sessionId = sessionId;
+    await user.save();
+
+    const token = generateToken(user._id, user.role, sessionId);
 
     // Set cookie
     const cookieOptions = {
@@ -443,7 +456,7 @@ export const changePassword = async (req, res, next) => {
     }
 
     // Get user with password
-    const user = await User.findById(req.user._id).select('+password +sessionToken');
+    const user = await User.findById(req.user._id).select('+password +sessionToken +sessionId');
 
     if (!user) {
       return res.status(404).json({
@@ -466,7 +479,10 @@ export const changePassword = async (req, res, next) => {
     user.password = newPassword;
     // Security: invalidate all sessions when password is changed.
     user.isLoggedIn = false;
+    user.sessionId = null;
     user.sessionToken = null;
+    user.lastActivity = null;
+    user.lastActive = null;
     await user.save();
 
     res.status(200).json({

@@ -2,6 +2,7 @@ import payoutService from '../services/payout.service.js';
 import { getPaginationMeta } from '../utils/helpers.js';
 import Payout from '../models/payout.model.js';
 import { getRegionalManagerFranchiseIds, regionalManagerCanAccessFranchise } from '../utils/regionalScope.js';
+import mongoose from 'mongoose';
 
 /**
  * Get all payouts
@@ -256,9 +257,12 @@ export const createPayout = async (req, res, next) => {
     if (req.file) {
       const fileUploadService = (await import('../services/fileUpload.service.js')).default;
       try {
+        // Document.entityId expects a valid ObjectId. Use a temporary ObjectId and
+        // update it to the payout's _id after payout creation.
+        const tempEntityId = new mongoose.Types.ObjectId();
         const document = await fileUploadService.processUploadedFile(req.file, {
           entityType: 'payout',
-          entityId: 'temp', // Will be updated after payout creation
+          entityId: tempEntityId,
           documentType: 'bank_payment_receipt',
           description: 'Bank payment receipt',
           uploadedBy: req.user._id,
@@ -286,6 +290,11 @@ export const createPayout = async (req, res, next) => {
       payoutNumber: req.body.payoutNumber || await generatePayoutNumber(),
       ...(bankPaymentReceipt && { bankPaymentReceipt }),
     };
+    // Normalize lead field (frontend may send leadId)
+    if (req.body.leadId && !payoutData.lead) {
+      payoutData.lead = req.body.leadId;
+    }
+    delete payoutData.leadId;
 
     // Parse JSON fields if they're strings
     if (typeof payoutData.invoices === 'string') {
@@ -317,6 +326,7 @@ export const createPayout = async (req, res, next) => {
     const populatedPayout = await Payout.findById(payout._id)
       .populate('agent', 'name email mobile')
       .populate('franchise', 'name')
+      .populate('lead', 'customerName loanAccountNo leadName formValues')
       .populate('invoices');
 
     res.status(201).json({
@@ -383,6 +393,10 @@ export const updatePayout = async (req, res, next) => {
     
     // Prepare update data
     const updateData = { ...req.body };
+    if (req.body.leadId && !updateData.lead) {
+      updateData.lead = req.body.leadId;
+    }
+    delete updateData.leadId;
     
     // Parse JSON fields if they're strings
     if (typeof updateData.invoices === 'string') {
@@ -411,6 +425,7 @@ export const updatePayout = async (req, res, next) => {
     })
       .populate('agent', 'name email mobile')
       .populate('franchise', 'name')
+      .populate('lead', 'customerName loanAccountNo leadName formValues')
       .populate('invoices');
 
     if (!payout) {

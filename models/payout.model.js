@@ -35,6 +35,13 @@ const payoutSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Optional: link payout to a specific lead (manual payouts)
+    lead: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Lead',
+      index: true,
+    },
+
     // Amount details
     totalAmount: {
       type: Number,

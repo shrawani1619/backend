@@ -1,30 +1,139 @@
+import mongoose from 'mongoose';
 import Accountant from '../models/accountant.model.js';
 import User from '../models/user.model.js';
 import Franchise from '../models/franchise.model.js';
 import RelationshipManager from '../models/relationship.model.js';
 
 /**
- * Get assigned Regional Manager IDs for an Accountant
+ * Regional Manager User IDs assigned to this accountant (Accountant.assignedRegionalManagers),
+ * validated so only existing users with role `regional_manager` are used — nothing else is in scope.
  * @param {Object} req - Express request with req.user
- * @returns {Promise<import('mongoose').Types.ObjectId[] | null>}
+ * @returns {Promise<string[] | null>} RM user id strings; `null` if caller is not accounts_manager
  */
 export async function getAccountantAssignedRegionalManagerIds(req) {
   if (!req.user || req.user.role !== 'accounts_manager') return null;
-  
+
   try {
-    // Find the accountant profile
     const accountant = await Accountant.findOne({ user: req.user._id }).select('assignedRegionalManagers');
-    if (!accountant || !accountant.assignedRegionalManagers || accountant.assignedRegionalManagers.length === 0) {
+    if (!accountant?.assignedRegionalManagers?.length) {
       return [];
     }
-    return accountant.assignedRegionalManagers.map(rm => {
-      // Handle both ObjectId and string
-      return rm.toString ? rm.toString() : String(rm);
-    });
+
+    const assigned = accountant.assignedRegionalManagers;
+    const valid = await User.find({
+      _id: { $in: assigned },
+      role: 'regional_manager',
+    })
+      .select('_id')
+      .lean();
+
+    return valid.map((u) => u._id.toString());
   } catch (error) {
     console.error('Error getting assigned RMs for accountant:', error);
     return [];
   }
+}
+
+/**
+ * Mongo match for invoices visible to this accounts_manager (same rules as GET /invoices).
+ * @returns {Promise<{ empty: boolean, match: object }>}
+ */
+export async function buildAccountsManagerInvoiceMatch(req) {
+  const assignedRMIds = await getAccountantAssignedRegionalManagerIds(req);
+  if (!assignedRMIds?.length) {
+    return { empty: true, match: { _id: { $in: [] } } };
+  }
+
+  const rmObjectIds = assignedRMIds
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const franchiseDocIds = await Franchise.find({
+    regionalManager: { $in: rmObjectIds },
+  })
+    .distinct('_id');
+
+  const { agentIds: accessibleAgentIdStrings } = await getAccountantAccessibleUserIds(req);
+  const scopedAgentIds = (accessibleAgentIdStrings || [])
+    .filter((id) => id && mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const orConditions = [];
+  if (franchiseDocIds?.length) {
+    orConditions.push({ franchise: { $in: franchiseDocIds } });
+  }
+  if (scopedAgentIds.length) {
+    orConditions.push({ agent: { $in: scopedAgentIds } });
+    orConditions.push({ subAgent: { $in: scopedAgentIds } });
+  }
+
+  if (!orConditions.length) {
+    return { empty: true, match: { _id: { $in: [] } } };
+  }
+
+  return { empty: false, match: { $or: orConditions } };
+}
+
+/**
+ * Precomputed filters for accounts_manager dashboard (scoped to assigned RMs only).
+ * @returns {Promise<null | { isEmpty: true } | { isEmpty: false, leadMatch: object, invoiceMatch: object, franchiseMatch: object, payoutMatch: object, activeAgentsMatch: object, recentAgentsMatch: object, rmUserCountMatch: object }>}
+ */
+export async function getAccountsManagerDashboardScopes(req) {
+  if (!req.user || req.user.role !== 'accounts_manager') return null;
+
+  const assignedRMIds = await getAccountantAssignedRegionalManagerIds(req);
+  if (!assignedRMIds?.length) {
+    return { isEmpty: true };
+  }
+
+  const rmObjectIds = assignedRMIds
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const { agentIds } = await getAccountantAccessibleUserIds(req);
+  const agentObjectIds = (agentIds || [])
+    .filter((id) => id && mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const inv = await buildAccountsManagerInvoiceMatch(req);
+  const invoiceMatch = inv.empty ? { _id: { $in: [] } } : inv.match;
+
+  const leadMatch =
+    agentObjectIds.length > 0 ? { agent: { $in: agentObjectIds } } : { _id: { $in: [] } };
+
+  const franchiseMatch = { regionalManager: { $in: rmObjectIds }, status: 'active' };
+
+  const payoutMatch =
+    agentObjectIds.length > 0 ? { agent: { $in: agentObjectIds } } : { _id: { $in: [] } };
+
+  const activeAgentsMatch =
+    agentObjectIds.length > 0
+      ? { role: 'agent', status: 'active', _id: { $in: agentObjectIds } }
+      : { _id: { $in: [] } };
+
+  const recentAgentsMatch =
+    agentObjectIds.length > 0 ? { role: 'agent', _id: { $in: agentObjectIds } } : { _id: { $in: [] } };
+
+  const rmDocIds = await RelationshipManager.find({ regionalManager: { $in: rmObjectIds } }).distinct('_id');
+  const rmUserCountMatch =
+    rmDocIds?.length > 0
+      ? {
+          role: 'relationship_manager',
+          status: 'active',
+          relationshipManagerOwned: { $in: rmDocIds },
+        }
+      : { _id: { $in: [] } };
+
+  return {
+    isEmpty: false,
+    leadMatch,
+    invoiceMatch,
+    franchiseMatch,
+    payoutMatch,
+    activeAgentsMatch,
+    recentAgentsMatch,
+    rmUserCountMatch,
+  };
 }
 
 /**

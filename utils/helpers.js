@@ -1,23 +1,45 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import SequenceCounter from '../models/sequenceCounter.model.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Generate unique invoice number
- * Format: INV-YYYYMMDD-XXXXX
+ * Indian financial year (April → March), e.g. Apr 2026–Mar 2027 → label "2026/27".
+ * @param {Date} d
+ * @returns {{ label: string, counterKey: string }}
+ */
+export function getIndianFinancialYearInvoiceParts(d = new Date()) {
+  const y = d.getFullYear();
+  const m = d.getMonth(); // 0 = Jan
+  // FY starts 1 April
+  const fyStartYear = m >= 3 ? y : y - 1;
+  const fyEndYear = fyStartYear + 1;
+  const endShort = String(fyEndYear % 100).padStart(2, '0');
+  const label = `${fyStartYear}/${endShort}`;
+  const counterKey = `${fyStartYear}-${fyEndYear}`;
+  return { label, counterKey };
+}
+
+/**
+ * Generate unique invoice number (sequential per financial year).
+ * Format: YYYY/YY-NNNNNNN (e.g. 2026/27-0000001, 2026/27-0000002)
  * @returns {Promise<String>} Invoice number
  */
 export async function generateInvoiceNumber() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const random = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
-  
-  return `INV-${year}${month}${day}-${random}`;
+  const { label, counterKey } = getIndianFinancialYearInvoiceParts(new Date());
+  const id = `invoice_${counterKey}`;
+
+  const doc = await SequenceCounter.findByIdAndUpdate(
+    id,
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  const n = doc.seq;
+  return `${label}-${String(n).padStart(7, '0')}`;
 }
 
 /**

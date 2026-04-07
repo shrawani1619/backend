@@ -54,6 +54,13 @@ const userSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    // Single active session identifier (preferred)
+    sessionId: {
+      type: String,
+      default: null,
+      select: false,
+      index: true,
+    },
     sessionToken: {
       type: String,
       default: null,
@@ -162,6 +169,9 @@ const userSchema = new mongoose.Schema(
     },
 
     lastLoginAt: Date,
+    // Preferred activity field (used by JWT auth middleware)
+    lastActivity: Date,
+    // Legacy field (kept for backward compatibility)
     lastActive: Date,
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -176,7 +186,7 @@ userSchema.index({ role: 1, status: 1 });
 userSchema.index({ franchise: 1, role: 1 });
 userSchema.index({ managedBy: 1, role: 1 });
 userSchema.index({ parentAgent: 1, role: 1 });
-userSchema.index({ isLoggedIn: 1, lastActive: 1 });
+userSchema.index({ isLoggedIn: 1, lastActivity: 1 });
 
 // Hash password before save when modified
 userSchema.pre('save', async function () {

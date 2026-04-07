@@ -137,8 +137,9 @@ const canViewEntity = async (user, entityType, entityId, req = null) => {
  */
 export const uploadDocument = async (req, res, next) => {
   try {
-    // Accept any file field names (handles multiple named inputs like pan, aadhaar, gst)
-    const upload = fileUploadService.getAnyUploadMiddleware();
+    // Same field name "file" for one or many parts — avoids multer .any() + repeated requests
+    // breaking req.body (entityType / entityId / documentType).
+    const upload = fileUploadService.getMultipleUploadMiddleware('file', 30);
 
     upload(req, res, async (err) => {
       if (err) {
@@ -148,54 +149,59 @@ export const uploadDocument = async (req, res, next) => {
         });
       }
 
-      // Support both single-file (req.file) and any-field uploads (req.files)
-      const incomingFile = req.file || (Array.isArray(req.files) && req.files.length > 0 ? req.files[0] : null);
-      if (!incomingFile) {
-        return res.status(400).json({
+      try {
+        const files = Array.isArray(req.files) && req.files.length > 0
+          ? req.files
+          : req.file
+            ? [req.file]
+            : [];
+        if (!files.length) {
+          return res.status(400).json({
+            success: false,
+            message: 'No file uploaded',
+          });
+        }
+
+        const { entityType, entityId, documentType, description } = req.body;
+
+        if (!entityType || !entityId || !documentType) {
+          return res.status(400).json({
+            success: false,
+            message: 'Entity type, entity ID, and document type are required',
+          });
+        }
+
+        if (files.length > 1) {
+          console.log(`Received ${files.length} file(s) in one upload for entity ${entityType}/${entityId}`);
+        }
+
+        const results = [];
+        for (const incomingFile of files) {
+          const document = await fileUploadService.processUploadedFile(incomingFile, {
+            entityType,
+            entityId,
+            documentType,
+            description,
+            uploadedBy: req.user._id,
+          });
+          results.push(document);
+        }
+
+        return res.status(201).json({
+          success: true,
+          message:
+            results.length > 1
+              ? `${results.length} documents uploaded successfully`
+              : 'Document uploaded successfully',
+          data: results.length === 1 ? results[0] : results,
+        });
+      } catch (uploadErr) {
+        console.error('Document upload processing failed:', uploadErr);
+        return res.status(500).json({
           success: false,
-          message: 'No file uploaded',
+          message: uploadErr.message || 'Failed to save document',
         });
       }
-
-      // Debug log of incoming files
-      if (req.files && req.files.length > 0) {
-        console.log(`Received ${req.files.length} file(s) on upload endpoint. Using first file:`, {
-          fieldname: incomingFile.fieldname,
-          originalname: incomingFile.originalname,
-          mimetype: incomingFile.mimetype,
-          size: incomingFile.size,
-        });
-      } else {
-        console.log('Received single file upload:', {
-          fieldname: incomingFile.fieldname,
-          originalname: incomingFile.originalname,
-          mimetype: incomingFile.mimetype,
-          size: incomingFile.size,
-        });
-      }
-
-      const { entityType, entityId, documentType, description } = req.body;
-
-      if (!entityType || !entityId || !documentType) {
-        return res.status(400).json({
-          success: false,
-          message: 'Entity type, entity ID, and document type are required',
-        });
-      }
-      // Process the uploaded file (upload to Cloudinary if configured, else save locally)
-      const document = await fileUploadService.processUploadedFile(incomingFile, {
-        entityType,
-        entityId,
-        documentType,
-        description,
-        uploadedBy: req.user._id,
-      });
-
-      res.status(201).json({
-        success: true,
-        message: 'Document uploaded successfully',
-        data: document,
-      });
     });
   } catch (error) {
     next(error);

@@ -7,6 +7,7 @@ import Franchise from '../models/franchise.model.js';
 import EmailLog from '../models/emailLog.model.js';
 import mongoose from 'mongoose';
 import { getRegionalManagerFranchiseIds } from '../utils/regionalScope.js';
+import { getAccountsManagerDashboardScopes } from '../utils/accountantScope.js';
 
 const getAdvancePaymentStats = async ({ leadMatch = {} } = {}) => {
   const advanceLeadIds = await Lead.find({ ...leadMatch, advancePayment: true }).distinct('_id');
@@ -571,29 +572,70 @@ export const getRelationshipManagerDashboard = async (req, res, next) => {
  */
 export const getAccountsDashboard = async (req, res, next) => {
   try {
-    // 1. Core Counts
-    const totalLeads = await Lead.countDocuments();
-    const verifiedLeads = await Lead.countDocuments({ verificationStatus: 'verified' });
-    const disbursedCases = await Lead.countDocuments({ status: { $in: ['disbursed', 'partial_disbursed', 'completed'] } });
-    const activeAgents = await User.countDocuments({ role: 'agent', status: 'active' });
-    const totalFranchises = await Franchise.countDocuments({ status: 'active' });
-    const activeRelationshipManagers = await User.countDocuments({ role: 'relationship_manager', status: 'active' });
-    const totalInvoices = await Invoice.countDocuments();
+    const accountScopes =
+      req.user.role === 'accounts_manager' ? await getAccountsManagerDashboardScopes(req) : null;
+
+    if (accountScopes?.isEmpty) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          totalLeads: 0,
+          verifiedLeads: 0,
+          disbursedCases: 0,
+          activeAgents: 0,
+          totalFranchises: 0,
+          activeRelationshipManagers: 0,
+          totalInvoices: 0,
+          totalRevenue: 0,
+          totalLoanAmount: 0,
+          advancePaymentCount: 0,
+          advancePaymentPendingAmount: 0,
+          totalPendingPayoutAmount: 0,
+          loanDistribution: [],
+          funnelData: [],
+          recentLeads: [],
+          recentAgents: [],
+        },
+      });
+    }
+
+    const scoped = accountScopes && !accountScopes.isEmpty;
+    const leadMatch = scoped ? accountScopes.leadMatch : {};
+    const invoiceMatch = scoped ? accountScopes.invoiceMatch : {};
+    const franchiseMatch = scoped ? accountScopes.franchiseMatch : { status: 'active' };
+    const payoutMatch = scoped ? accountScopes.payoutMatch : {};
+    const activeAgentsMatch = scoped ? accountScopes.activeAgentsMatch : { role: 'agent', status: 'active' };
+    const recentAgentsMatch = scoped ? accountScopes.recentAgentsMatch : { role: 'agent' };
+    const rmUserCountMatch = scoped ? accountScopes.rmUserCountMatch : { role: 'relationship_manager', status: 'active' };
+
+    // 1. Core Counts (accounts_manager: only data under Regional Managers assigned to this user)
+    const totalLeads = await Lead.countDocuments(leadMatch);
+    const verifiedLeads = await Lead.countDocuments({ ...leadMatch, verificationStatus: 'verified' });
+    const disbursedCases = await Lead.countDocuments({
+      ...leadMatch,
+      status: { $in: ['disbursed', 'partial_disbursed', 'completed'] },
+    });
+    const activeAgents = await User.countDocuments(activeAgentsMatch);
+    const totalFranchises = await Franchise.countDocuments(franchiseMatch);
+    const activeRelationshipManagers = await User.countDocuments(rmUserCountMatch);
+    const totalInvoices = await Invoice.countDocuments(invoiceMatch);
 
     // 2. Revenue (Commission Sum)
     const commissionAggregation = await Invoice.aggregate([
+      ...(scoped ? [{ $match: invoiceMatch }] : []),
       { $group: { _id: null, total: { $sum: '$commissionAmount' } } },
     ]);
     const totalRevenue = commissionAggregation[0]?.total || 0;
 
     const pendingPayoutAggregation = await Payout.aggregate([
-      { $match: { status: 'pending' } },
+      { $match: scoped ? { ...payoutMatch, status: 'pending' } : { status: 'pending' } },
       { $group: { _id: null, total: { $sum: '$netPayable' } } },
     ]);
     const totalPendingPayoutAmount = pendingPayoutAggregation[0]?.total || 0;
 
     // 3. Loan Distribution (count + total loan amount per type)
     const loanDistributionAgg = await Lead.aggregate([
+      ...(scoped ? [{ $match: leadMatch }] : []),
       {
         $group: {
           _id: '$loanType',
@@ -624,12 +666,15 @@ export const getAccountsDashboard = async (req, res, next) => {
 
     // 3b. Overall total loan amount for all leads
     const totalLoanAmountAgg = await Lead.aggregate([
+      ...(scoped ? [{ $match: leadMatch }] : []),
       { $group: { _id: null, total: { $sum: '$loanAmount' } } },
     ]);
     const totalLoanAmount = totalLoanAmountAgg[0]?.total || 0;
 
     // 3c. Advance Payment Stats
-    const { advancePaymentCount, advancePaymentPendingAmount } = await getAdvancePaymentStats({ leadMatch: {} });
+    const { advancePaymentCount, advancePaymentPendingAmount } = await getAdvancePaymentStats({
+      leadMatch: scoped ? leadMatch : {},
+    });
 
     // 4. Lead Funnel
     // Get funnel period filter from query params (weekly, monthly, yearly)
@@ -663,7 +708,7 @@ export const getAccountsDashboard = async (req, res, next) => {
 
     const funnelData = await Promise.all(funnelSteps.map(async (step, idx) => {
       const agg = await Lead.aggregate([
-        { $match: { status: step, ...dateFilter } },
+        { $match: { ...leadMatch, status: step, ...dateFilter } },
         { $group: { _id: null, totalAmount: { $sum: '$loanAmount' } } }
       ]);
       return {
@@ -674,12 +719,12 @@ export const getAccountsDashboard = async (req, res, next) => {
     }));
 
     // 5. Recent Items
-    const recentLeads = await Lead.find()
+    const recentLeads = await Lead.find(leadMatch)
       .select('customerName applicantMobile loanAmount status createdAt')
       .sort({ createdAt: -1 })
       .limit(5);
 
-    const recentAgents = await User.find({ role: 'agent' })
+    const recentAgents = await User.find(recentAgentsMatch)
       .select('name email status profileImage createdAt')
       .sort({ createdAt: -1 })
       .limit(5);
@@ -1301,10 +1346,16 @@ export const getFranchiseOwnerDashboard = async (req, res, next) => {
       .limit(5);
 
     // Get relationship managers (all active relationship managers)
-    const relationshipManagers = await User.find({ role: 'relationship_manager', status: 'active' })
-      .select('name email mobile status createdAt')
-      .sort({ createdAt: -1 })
-      .limit(5);
+    let relationshipManagers = [];
+    try {
+      relationshipManagers = await User.find({ role: 'relationship_manager', status: 'active' })
+        .select('name email mobile status createdAt')
+        .sort({ createdAt: -1 })
+        .limit(5);
+    } catch (err) {
+      console.error('Error fetching relationship managers:', err);
+      // Continue without relationship managers data
+    }
 
     const recentInvoices = await Invoice.find({ franchise: franchiseObjectId })
       .populate('agent', 'name email')

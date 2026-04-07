@@ -1,8 +1,9 @@
 import jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../config/env.js';
 import User from '../models/user.model.js';
+import { getSessionInactivityMs } from '../utils/session.js';
 
-const SESSION_INACTIVITY_MS = Number(process.env.SESSION_INACTIVITY_MS || 30 * 60 * 1000);
+const SESSION_INACTIVITY_MS = getSessionInactivityMs();
 
 /**
  * Protect routes - Verify JWT token from cookies or Authorization header
@@ -32,8 +33,16 @@ export const authenticate = async (req, res, next) => {
       // Verify token
       const decoded = jwt.verify(token, JWT_SECRET);
 
+      // Enforce required payload shape (we only accept sessionId-based JWTs)
+      if (!decoded?.sessionId) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired or logged in from another device',
+        });
+      }
+
       // Check if user still exists (using unified User model)
-      const user = await User.findById(decoded.userId).select('+sessionToken');
+      const user = await User.findById(decoded.userId).select('+sessionId');
 
       if (!user) {
         return res.status(401).json({
@@ -50,8 +59,8 @@ export const authenticate = async (req, res, next) => {
         });
       }
 
-      // Enforce single active session via token match
-      if (!user.isLoggedIn || !user.sessionToken || user.sessionToken !== token) {
+      // Enforce single active session via DB-backed sessionId match
+      if (!user.isLoggedIn || !user.sessionId || user.sessionId !== decoded.sessionId) {
         return res.status(401).json({
           success: false,
           message: 'Session expired or logged in from another device',
@@ -59,9 +68,13 @@ export const authenticate = async (req, res, next) => {
       }
 
       // Optional idle-timeout auto logout
-      if (user.lastActive && Date.now() - new Date(user.lastActive).getTime() > SESSION_INACTIVITY_MS) {
+      const lastActivity = user.lastActivity || user.lastActive;
+      if (lastActivity && Date.now() - new Date(lastActivity).getTime() > SESSION_INACTIVITY_MS) {
         user.isLoggedIn = false;
-        user.sessionToken = null;
+        user.sessionId = null;
+        user.sessionToken = null; // legacy
+        user.lastActivity = null;
+        user.lastActive = null; // legacy
         await user.save();
         return res.status(401).json({
           success: false,
@@ -69,8 +82,10 @@ export const authenticate = async (req, res, next) => {
         });
       }
 
-      // Track activity timestamp on successful authenticated request
-      user.lastActive = new Date();
+      // Track activity timestamp on every successful authenticated request
+      const now = new Date();
+      user.lastActivity = now;
+      user.lastActive = now; // keep legacy field in sync
       await user.save();
 
       // Attach full user object to request
@@ -106,8 +121,10 @@ export const optionalAuthenticate = async (req, res, next) => {
     if (!token) return next();
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
-      const user = await User.findById(decoded.userId).select('+sessionToken');
-      const isValidSession = user && user.status === 'active' && user.isLoggedIn && user.sessionToken === token;
+      if (!decoded?.sessionId) return next();
+
+      const user = await User.findById(decoded.userId).select('+sessionId');
+      const isValidSession = user && user.status === 'active' && user.isLoggedIn && user.sessionId === decoded.sessionId;
       if (isValidSession) req.user = user;
     } catch (_) { /* ignore invalid token */ }
     next();

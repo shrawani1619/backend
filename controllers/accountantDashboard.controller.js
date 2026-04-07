@@ -1,6 +1,8 @@
 import Lead from '../models/lead.model.js';
 import Bank from '../models/bank.model.js';
 import { getAccountantAccessibleAgentIds } from '../utils/accountantScope.js';
+import { attachRegionalManagersToLeads } from '../utils/regionalManagerResolver.js';
+import { resolveLeadDisplayCustomerId } from '../utils/leadDisplayCustomerId.js';
 
 // Status mapping for consistent handling across the application
 const ACCOUNTANT_ALLOWED_STATUSES = ['sanctioned', 'partial_disbursed', 'disbursed', 'completed'];
@@ -78,7 +80,7 @@ const calculateDashboardStats = async (req = null) => {
 // 1️⃣ Get Approved Leads (Accountant Only)
 export const getApprovedLeads = async (req, res, next) => {
   try {
-    const { page = 1, limit = 50, search, bank, startDate, endDate, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+    const { page = 1, limit = 50, search, bank, startDate, endDate, advancePayment, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
     
     // Build query for approved leads only (using correct status values)
     const query = {
@@ -113,7 +115,10 @@ export const getApprovedLeads = async (req, res, next) => {
       query.$or = [
         { customerName: { $regex: search, $options: 'i' } },
         { leadId: { $regex: search, $options: 'i' } },
-        { loanAccountNo: { $regex: search, $options: 'i' } }
+        { caseNumber: { $regex: search, $options: 'i' } },
+        { loanAccountNo: { $regex: search, $options: 'i' } },
+        { 'formValues.applicationNumber': { $regex: search, $options: 'i' } },
+        { 'formValues.customerId': { $regex: search, $options: 'i' } },
       ];
     }
 
@@ -129,6 +134,11 @@ export const getApprovedLeads = async (req, res, next) => {
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
+    // Filter by advance payment
+    if (advancePayment !== undefined && advancePayment !== '') {
+      query.advancePayment = advancePayment === 'yes';
+    }
+
     // Build sort object
     const sort = {};
     sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
@@ -138,17 +148,17 @@ export const getApprovedLeads = async (req, res, next) => {
       .sort(sort)
       .limit(limit * 1)
       .skip((page - 1) * limit)
-      .populate('agent', 'name email agentType gst kyc.gst')
+      .populate('agent', 'name email agentType gst kyc.gst managedBy managedByModel parentAgent')
       .populate('subAgent', 'name email agentType gst kyc.gst')
       .populate('referralFranchise', 'name')
       .populate('bank', 'name')
       .populate({
         path: 'associated',
-        select: 'name',
-        // Populate both Franchise and RelationshipManager
-        // Remove match filter to allow both models
+        select: 'name regionalManager owner ownerName',
       })
       .select('-documents -history');
+
+    await attachRegionalManagersToLeads(leads);
 
     // Get invoice information for each lead
     const Invoice = (await import('../models/invoice.model.js')).default;
@@ -174,6 +184,10 @@ export const getApprovedLeads = async (req, res, next) => {
       leadObj.hasAgentInvoice = invoiceMap[leadId]?.agent || false;
       leadObj.hasSubAgentInvoice = invoiceMap[leadId]?.sub_agent || false;
       leadObj.hasFranchiseInvoice = invoiceMap[leadId]?.franchise || false;
+      leadObj.regionalManager =
+        typeof lead.get === 'function' ? lead.get('regionalManager') : lead.regionalManager;
+      if (leadObj.regionalManager === undefined) leadObj.regionalManager = null;
+      leadObj.displayCustomerId = resolveLeadDisplayCustomerId(leadObj);
       return leadObj;
     });
 
@@ -224,14 +238,12 @@ export const getApprovedLeadDetails = async (req, res, next) => {
     
     // Find lead with approved status only (using correct status values)
     const lead = await Lead.findOne(query)
-    .populate('agent', 'name email mobile')
+    .populate('agent', 'name email mobile managedBy managedByModel parentAgent')
     .populate('referralFranchise', 'name')
     .populate('bank', 'name type')
     .populate({
       path: 'associated',
-      select: 'name',
-      // Populate both Franchise and RelationshipManager
-      // Remove match filter to allow both models
+      select: 'name regionalManager owner ownerName',
     })
     .populate('createdBy', 'name email')
     .select('+disbursementHistory');
@@ -242,6 +254,9 @@ export const getApprovedLeadDetails = async (req, res, next) => {
         message: 'Approved lead not found'
       });
     }
+
+    await attachRegionalManagersToLeads([lead]);
+    const regionalManager = lead.regionalManager ?? null;
 
     // Calculate financial summary
     const loanAmount = lead.loanAmount || lead.amount || 0;
@@ -261,10 +276,14 @@ export const getApprovedLeadDetails = async (req, res, next) => {
 
     const netCommission = totalCommission - totalGST;
 
+    const leadPayload = lead.toObject();
+    leadPayload.regionalManager = regionalManager;
+    leadPayload.displayCustomerId = resolveLeadDisplayCustomerId(leadPayload);
+
     res.status(200).json({
       success: true,
       data: {
-        lead,
+        lead: leadPayload,
         financialSummary: {
           loanAmount,
           totalDisbursed: disbursedAmount,
