@@ -90,9 +90,12 @@ export const createFranchise = async (req, res, next) => {
     }
 
 
+    // Owner user `name` must be non-empty; form may only send franchise `name` (ownerName optional in UI).
+    const resolvedOwnerName = (ownerName && String(ownerName).trim()) || name.trim();
+
     const franchisePayload = {
       name: name.trim(),
-      ownerName: ownerName.trim(),
+      ownerName: resolvedOwnerName,
       email: email.toLowerCase().trim(),
       mobile: mobile.trim(),
       status: status || 'active',
@@ -112,7 +115,7 @@ export const createFranchise = async (req, res, next) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const ownerUser = await User.create({
-      name: ownerName.trim(),
+      name: resolvedOwnerName,
       email: franchise.email,
       mobile: franchise.mobile,
       password: hashedPassword,

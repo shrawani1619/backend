@@ -3,20 +3,37 @@ import nodemailer from 'nodemailer';
 import { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } from '../config/env.js';
 
 /**
+ * Parse SMTP port — env vars are strings; `SMTP_PORT === 465` was always false, breaking SSL on 465.
+ */
+function getSmtpPort() {
+  const n = parseInt(String(SMTP_PORT || '587'), 10);
+  return Number.isFinite(n) && n > 0 ? n : 587;
+}
+
+/**
  * Email Service
  * Handles email sending with template support and logging
  */
 class EmailService {
   constructor() {
+    const port = getSmtpPort();
+    // 465 = implicit TLS (SMTPS); 587/25 = STARTTLS (secure: false)
+    const secure = port === 465;
+
     // Initialize nodemailer transporter
     this.transporter = nodemailer.createTransport({
       host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_PORT === 465, // true for 465, false for other ports
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS,
-      },
+      port,
+      secure,
+      auth:
+        SMTP_USER && SMTP_PASS
+          ? {
+              user: SMTP_USER,
+              pass: SMTP_PASS,
+            }
+          : undefined,
+      connectionTimeout: 20_000,
+      greetingTimeout: 15_000,
     });
   }
 

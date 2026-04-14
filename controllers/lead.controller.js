@@ -2283,6 +2283,9 @@ export const sendDisbursementEmail = async (req, res, next) => {
         errorMessage = 'SMTP authentication failed. Please check your email server credentials in the system settings. The username and password may be incorrect or the account may require an app-specific password.';
       } else if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ETIMEDOUT')) {
         errorMessage = 'Unable to connect to the email server. Please check your SMTP server settings (host and port).';
+      } else if (errorMessage.includes('Greeting never received')) {
+        errorMessage =
+          'SMTP server did not respond correctly. Use the mail hostname from your host (often mail.yourdomain.com), ensure SMTP_PORT matches (465 with SSL, or 587 with STARTTLS), and restart the server after changing .env.';
       } else if (errorMessage.includes('authentication')) {
         errorMessage = 'Email server authentication failed. Please verify your SMTP credentials.';
       }
