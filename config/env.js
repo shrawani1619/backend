@@ -16,16 +16,21 @@ if (!process.env.DB_URI) {
 // Use MONGODB_URI if DB_URI is not set (for backward compatibility)
 const DB_URI_FINAL = process.env.DB_URI
 
-export const { 
-  PORT, 
-  JWT_SECRET, 
+export const {
+  JWT_SECRET,
   JWT_EXPIRE,
   SMTP_HOST,
   SMTP_PORT,
   SMTP_USER,
   SMTP_PASS,
   SMTP_FROM,
-  NODE_ENV
+  NODE_ENV,
 } = process.env;
+
+/**
+ * HTTP listen port. Prefer SERVER_PORT in .env so a machine-wide `PORT` (common on Windows)
+ * does not shadow your API port. Falls back to `PORT` for PaaS (e.g. Render/Heroku).
+ */
+export const PORT = process.env.SERVER_PORT || process.env.PORT || "5001";
 
 export const DB_URI = DB_URI_FINAL;
